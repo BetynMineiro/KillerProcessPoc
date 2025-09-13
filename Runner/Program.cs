@@ -1,21 +1,18 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Linq;
+﻿using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
-using System.Threading.Tasks;
 using Infra;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Console;
+using System.Management; 
 
 namespace Runner;
 
-class Program
+internal static class Program
 {
-    static async Task<int> Main(string[] args)
+    private static async Task<int> Main(string[] args)
     {
-        var depth = GetInt("DEPTH", 3);
+        var depth = GetInt("DEPTH", 5);
         var breadth = GetInt("BREADTH", 5);
         var sleepMs = GetInt("SLEEPMs", 300000);
         var timeoutMs = GetInt("TIMEOUTMs", 5000);
@@ -41,10 +38,13 @@ class Program
         var options = new ProcessRunnerOptions { GracefulWaitBeforeKill = TimeSpan.FromMilliseconds(500) };
         var runner = ProcessRunnerFactory.Create(options, loggerFactory); // escolhe Unix/Windows automaticamente
 
+        // --- usa caminho absoluto do TreeProcessApp.dll (ou override via TREE_DLL) ---
+        var treeDll = Environment.GetEnvironmentVariable("TREE_DLL") ?? ResolveTreeAppDll();
+
         var swTotal = Stopwatch.StartNew();
         var exitCode = await runner.RunWithTimeoutAsync(
             "dotnet",
-            $"TreeProcessApp.dll --depth {depth} --breadth {breadth} --sleepMs {sleepMs} --tag {tag}",
+            $"\"{treeDll}\" --depth {depth} --breadth {breadth} --sleepMs {sleepMs} --tag {tag}",
             TimeSpan.FromMilliseconds(timeoutMs)
         );
         swTotal.Stop();
@@ -106,6 +106,53 @@ class Program
 
     // ===== Helpers =====
 
+    static string ResolveTreeAppDll()
+    {
+        const string name = "TreeProcessApp.dll";
+
+        // 1) variáveis rápidas
+        var candidates = new List<string>
+        {
+            Path.Combine(Environment.CurrentDirectory, name),
+            Path.Combine(AppContext.BaseDirectory ?? Environment.CurrentDirectory, name)
+        };
+
+        // 2) tenta localizar pastas de build típicas a partir da pasta atual (ou da solução)
+        TryAddIfExists(candidates, FindSiblingBuild("TreeProcessApp", "bin", "Debug", "net9.0", name));
+        TryAddIfExists(candidates, FindSiblingBuild("TreeProcessApp", "bin", "Release", "net9.0", name));
+        TryAddIfExists(candidates, FindSiblingBuild("TreeProcessApp", "bin", "Debug", "net8.0", name));
+        TryAddIfExists(candidates, FindSiblingBuild("TreeProcessApp", "bin", "Release", "net8.0", name));
+
+        var hit = candidates.FirstOrDefault(File.Exists);
+        if (hit is null)
+            throw new FileNotFoundException(
+                $"Não encontrei {name}. Informe o caminho via variável de ambiente TREE_DLL ou garanta que o projeto TreeProcessApp foi buildado.",
+                name);
+
+        return Path.GetFullPath(hit);
+
+        static void TryAddIfExists(List<string> list, string? path)
+        {
+            if (!string.IsNullOrWhiteSpace(path)) list.Add(path);
+        }
+
+        static string? FindSiblingBuild(params string[] parts)
+        {
+            // sobe diretórios até achar a pasta do projeto "TreeProcessApp"
+            var dir = new DirectoryInfo(Environment.CurrentDirectory);
+            while (dir != null)
+            {
+                var projDir = Path.Combine(dir.FullName, parts[0]);
+                if (Directory.Exists(projDir))
+                {
+                    return Path.Combine(new[] { projDir }.Concat(parts.Skip(1)).ToArray());
+                }
+                dir = dir.Parent;
+            }
+            return null;
+        }
+    }
+
     static Dictionary<int, long> ComputeOpenedByLevel(int depth, int breadth)
     {
         var dict = new Dictionary<int, long>();
@@ -123,25 +170,36 @@ class Program
 
     static int GetInt(string env, int def) => int.TryParse(Environment.GetEnvironmentVariable(env), out var v) ? v : def;
 
+    // ===== Verificação de processos por tag =====
+
     static async Task<bool> AnyLeft(string tag)
     {
         if (OperatingSystem.IsWindows())
         {
-            // Retorna "1" se houver ao menos 1 processo com a tag; senão "0".
-            var ps = $@"
-$tag = '{tag}';
-$found = Get-CimInstance Win32_Process |
-    Where-Object {{
-        $_.CommandLine -ne $null -and
-        $_.CommandLine -like '*TreeProcessApp*' -and
-        $_.CommandLine -like ('*' + $tag + '*')
-    }} |
-    Select-Object -First 1;
-if ($found) {{ '1' }} else {{ '0' }}
-";
-            var (exit, outp) = await RunAndRead("powershell", $"-NoProfile -Command \"{ps}\"");
-            var trimmed = outp?.Trim();
-            return trimmed == "1";
+            try
+            {
+                using var searcher = new ManagementObjectSearcher("SELECT ProcessId, CommandLine FROM Win32_Process");
+                using var results = searcher.Get();
+
+                foreach (var o in results)
+                {
+                    var mo = (ManagementObject)o;
+                    var cmd = mo["CommandLine"] as string;
+                    if (string.IsNullOrEmpty(cmd)) continue;
+
+                    if (cmd.IndexOf("TreeProcessApp", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                        cmd.IndexOf(tag, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            catch
+            {
+                // fallback mínimo se WMI indisponível
+                return false;
+            }
         }
         else
         {
@@ -154,19 +212,31 @@ if ($found) {{ '1' }} else {{ '0' }}
     {
         if (OperatingSystem.IsWindows())
         {
-            // Retorna somente um inteiro puro
-            var ps = $@"
-$tag = '{tag}';
-(Get-CimInstance Win32_Process |
-    Where-Object {{
-        $_.CommandLine -ne $null -and
-        $_.CommandLine -like '*TreeProcessApp*' -and
-        $_.CommandLine -like ('*' + $tag + '*')
-    }} |
-    Measure-Object).Count
-";
-            var (exit, outp) = await RunAndRead("powershell", $"-NoProfile -Command \"{ps}\"");
-            return int.TryParse(outp?.Trim(), out var n) ? n : 0;
+            try
+            {
+                int count = 0;
+                using var searcher = new ManagementObjectSearcher("SELECT ProcessId, CommandLine FROM Win32_Process");
+                using var results = searcher.Get();
+
+                foreach (var o in results)
+                {
+                    var mo = (ManagementObject)o;
+                    var cmd = mo["CommandLine"] as string;
+                    if (string.IsNullOrEmpty(cmd)) continue;
+
+                    if (cmd.IndexOf("TreeProcessApp", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                        cmd.IndexOf(tag, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        count++;
+                    }
+                }
+                return count;
+            }
+            catch
+            {
+                // fallback mínimo
+                return 0;
+            }
         }
         else
         {
@@ -175,6 +245,8 @@ $tag = '{tag}';
             return int.TryParse(outp?.Trim(), out var n) ? n : 0;
         }
     }
+
+    // ===== Exec helpers =====
 
     static async Task<bool> RunAndCheck(string file, string args)
     {

@@ -13,7 +13,7 @@ public sealed class WindowsProcessRunner : IProcessRunner
     private readonly TimeSpan _gracefulWaitBeforeKill;
     private readonly ILogger? _logger;
     private Process? _proc;
-    private JobHandle? _job; // wrapper que sabe dar Dispose/Terminate
+    private JobHandle? _job; // wrapper com Dispose e Terminate
 
     public WindowsProcessRunner(ProcessRunnerOptions? options = null, ILogger? logger = null)
     {
@@ -73,7 +73,7 @@ public sealed class WindowsProcessRunner : IProcessRunner
         await LogDescendantsSnapshot("Before TERM");
         await KillTreeAsync(force: false);
 
-        // Grace pequena para finalizar limpo
+        // Grace pequena
         var graceSw = Stopwatch.StartNew();
         var exited = await _proc.WaitForExitAsync(ctsLinked.Token).WaitAsync(_gracefulWaitBeforeKill, ctsLinked.Token)
                      .ContinueWith(t => t.Status == TaskStatus.RanToCompletion, ctsLinked.Token);
@@ -105,12 +105,12 @@ public sealed class WindowsProcessRunner : IProcessRunner
                 if (force)
                 {
                     _logger?.LogInformation("Windows: TerminateJobObject for PID={Pid}", _proc.Id);
-                    _job.Terminate(exitCode: 1);
+                    _job.Terminate(exitCode: 1); // mata TODOS do Job imediatamente
                 }
                 else
                 {
                     _logger?.LogInformation("Windows: disposing Job to kill entire tree for PID={Pid}", _proc.Id);
-                    _job.Dispose(); // com KILL_ON_CLOSE deve encerrar a árvore
+                    _job.Dispose(); // KILL_ON_JOB_CLOSE
                 }
                 _job = null;
             }
@@ -146,7 +146,7 @@ public sealed class WindowsProcessRunner : IProcessRunner
             _job = null;
         }
 
-        // 2) Se o processo ainda estiver vivo, tenta
+        // 2) Se o processo ainda estiver vivo, tenta terminar
         if (_proc is { HasExited: false })
         {
             var pid = _proc.Id;
@@ -214,35 +214,66 @@ public sealed class WindowsProcessRunner : IProcessRunner
         }
     }
 
-    private static async Task<HashSet<int>> GetDescendantsAsync(int rootPid)
+    // ======= Toolhelp32Snapshot para montar árvore por PPID (confiável) =======
+    private static Task<HashSet<int>> GetDescendantsAsync(int rootPid)
     {
-        var result = new HashSet<int>();
-        var ps = @"
-$root = " + rootPid + @";
-$map = @{}
-Get-CimInstance Win32_Process | ForEach-Object {
-  $ppid = $_.ParentProcessId
-  if (-not $map.ContainsKey($ppid)) { $map[$ppid] = @() }
-  $map[$ppid] += $_.ProcessId
-}
-function Recurse([int]$p){
-  if ($map.ContainsKey($p)) {
-    foreach ($c in $map[$p]) {
-      $c
-      Recurse $c
-    }
-  }
-}
-Recurse $root | Sort-Object -Unique | ForEach-Object { $_ }
-";
-        var (exit, outp) = await RunAndRead("powershell", $"-NoProfile -Command \"{ps}\"");
-        if (exit != 0 || outp is null) return result;
+        var set = GetDescendantsViaToolhelp(rootPid);
+        return Task.FromResult(set);
 
-        foreach (var line in outp.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
-            if (int.TryParse(line.Trim(), out var pid))
-                result.Add(pid);
+        static HashSet<int> GetDescendantsViaToolhelp(int root)
+        {
+            var result = new HashSet<int>();
+            var map = new Dictionary<int, List<int>>();
 
-        return result;
+            IntPtr snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if (snap == INVALID_HANDLE_VALUE) return result;
+
+            try
+            {
+                var pe = new PROCESSENTRY32();
+                pe.dwSize = (uint)Marshal.SizeOf<PROCESSENTRY32>();
+
+                if (Process32First(snap, ref pe))
+                {
+                    do
+                    {
+                        int pid = (int)pe.th32ProcessID;
+                        int ppid = (int)pe.th32ParentProcessID;
+
+                        if (!map.TryGetValue(ppid, out var list))
+                            map[ppid] = list = new List<int>();
+                        list.Add(pid);
+                    }
+                    while (Process32Next(snap, ref pe));
+                }
+            }
+            finally
+            {
+                CloseHandle(snap);
+            }
+
+            // DFS a partir do root
+            var stack = new Stack<int>();
+            var visited = new HashSet<int> { root };
+            stack.Push(root);
+
+            while (stack.Count > 0)
+            {
+                var cur = stack.Pop();
+                if (!map.TryGetValue(cur, out var children)) continue;
+
+                foreach (var c in children)
+                {
+                    if (visited.Add(c))
+                    {
+                        result.Add(c);
+                        stack.Push(c);
+                    }
+                }
+            }
+
+            return result;
+        }
     }
 
     private static async Task RunAndWait(string file, string args)
@@ -290,7 +321,7 @@ Recurse $root | Sort-Object -Unique | ForEach-Object { $_ }
         p?.WaitForExit();
     }
 
-    // ---------- Job wrapper ----------
+    // ================== Job wrapper (com TerminateJobObject) ==================
     private sealed class JobHandle : IDisposable
     {
         private IntPtr _handle;
@@ -328,10 +359,8 @@ Recurse $root | Sort-Object -Unique | ForEach-Object { $_ }
         public void Terminate(uint exitCode)
         {
             if (_handle == IntPtr.Zero) return;
-            // Termina TODOS os processos no job imediatamente
             if (!TerminateJobObject(_handle, exitCode))
                 throw new InvalidOperationException("TerminateJobObject failed.");
-            // Depois do terminate, podemos fechar o handle
             Close();
         }
 
@@ -408,4 +437,35 @@ Recurse $root | Sort-Object -Unique | ForEach-Object { $_ }
             public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed;
         }
     }
+
+    // ============ P/Invoke Toolhelp32Snapshot ============
+    private const uint TH32CS_SNAPPROCESS = 0x00000002;
+    private static readonly IntPtr INVALID_HANDLE_VALUE = new IntPtr(-1);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    private struct PROCESSENTRY32
+    {
+        public uint dwSize;
+        public uint cntUsage;
+        public uint th32ProcessID;
+        public IntPtr th32DefaultHeapID;
+        public uint th32ModuleID;
+        public uint cntThreads;
+        public uint th32ParentProcessID;
+        public int pcPriClassBase;
+        public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szExeFile;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr CreateToolhelp32Snapshot(uint dwFlags, uint th32ProcessID);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool Process32First(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool Process32Next(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
 }
