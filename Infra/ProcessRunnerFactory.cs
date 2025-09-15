@@ -11,6 +11,6 @@ public static class ProcessRunnerFactory
         if (OperatingSystem.IsWindows())
             return new WindowsProcessRunner(options, loggerFactory.CreateLogger<WindowsProcessRunner>());
 
-        return new UnixProcessRunner(options, loggerFactory.CreateLogger<UnixProcessRunner>());
+        return new UnixProcessRunnerCgroup(options, loggerFactory.CreateLogger<UnixProcessRunner>());
     }
 }
