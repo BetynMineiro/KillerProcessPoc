@@ -8,7 +8,7 @@ namespace Infra;
 public class ProcessRunnerFactoryTests : IDisposable
 {
     private readonly ILoggerFactory _loggerFactory = NullLoggerFactory.Instance;
-    private IProcessRunner? _runner;
+    private IProcessRunnerKiller? _runner;
 
     public void Dispose()
     {
@@ -16,7 +16,7 @@ public class ProcessRunnerFactoryTests : IDisposable
         _runner = null;
     }
 
-    [Fact(DisplayName = "Factory cria UnixProcessRunner em Linux/macOS")]
+    [Fact(DisplayName = "Factory cria UnixProcessRunnerKiller em Linux/macOS")]
     public void Create_ShouldReturnUnixRunner_OnUnix()
     {
         if (OperatingSystem.IsWindows())
@@ -27,10 +27,10 @@ public class ProcessRunnerFactoryTests : IDisposable
         _runner = ProcessRunnerFactory.Create(options, _loggerFactory);
 
         Assert.NotNull(_runner);
-        Assert.IsType<UnixProcessRunner>(_runner);
+        Assert.IsType<UnixProcessRunnerKiller>(_runner);
     }
 
-    [Fact(DisplayName = "Factory cria WindowsProcessRunner no Windows")]
+    [Fact(DisplayName = "Factory cria WindowsProcessRunnerKiller no Windows")]
     public void Create_ShouldReturnWindowsRunner_OnWindows()
     {
         if (!OperatingSystem.IsWindows())
@@ -41,7 +41,7 @@ public class ProcessRunnerFactoryTests : IDisposable
         _runner = ProcessRunnerFactory.Create(options, _loggerFactory);
 
         Assert.NotNull(_runner);
-        Assert.IsType<WindowsProcessRunner>(_runner);
+        Assert.IsType<WindowsProcessRunnerKiller>(_runner);
     }
 
     [Fact(DisplayName = "Factory aceita options nulo e não lança")]
@@ -53,7 +53,7 @@ public class ProcessRunnerFactoryTests : IDisposable
         Assert.NotNull(_runner);
         // apenas garante que veio alguma implementação válida
         Assert.True(
-            _runner is UnixProcessRunner || _runner is WindowsProcessRunner,
+            _runner is UnixProcessRunnerKiller || _runner is WindowsProcessRunnerKiller,
             $"Tipo inesperado: {_runner.GetType().FullName}"
         );
     }

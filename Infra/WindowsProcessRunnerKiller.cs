@@ -8,17 +8,17 @@ using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 
-public sealed class WindowsProcessRunner : IProcessRunner
+public sealed class WindowsProcessRunnerKiller : IProcessRunnerKiller
 {
     private readonly TimeSpan _gracefulWaitBeforeKill;
     private readonly ILogger? _logger;
     private Process? _proc;
     private JobHandle? _job; // wrapper com Dispose e Terminate
 
-    public WindowsProcessRunner(ProcessRunnerOptions? options = null, ILogger? logger = null)
+    public WindowsProcessRunnerKiller(ProcessRunnerOptions? options = null, ILogger? logger = null)
     {
         if (!OperatingSystem.IsWindows())
-            throw new PlatformNotSupportedException("WindowsProcessRunner só suporta Windows.");
+            throw new PlatformNotSupportedException("WindowsProcessRunnerKiller só suporta Windows.");
 
         _gracefulWaitBeforeKill = (options?.GracefulWaitBeforeKill).GetValueOrDefault(TimeSpan.FromMilliseconds(800));
         _logger = logger;

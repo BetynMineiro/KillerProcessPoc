@@ -7,7 +7,7 @@ using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 
-public sealed class UnixProcessRunner(ProcessRunnerOptions? options = null, ILogger? logger = null) : IProcessRunner
+public sealed class UnixProcessRunnerKiller(ProcessRunnerOptions? options = null, ILogger? logger = null) : IProcessRunnerKiller
 {
     private readonly TimeSpan _gracefulWaitBeforeKill = (options?.GracefulWaitBeforeKill).GetValueOrDefault(TimeSpan.FromMilliseconds(500));
     private Process? _proc;
@@ -19,7 +19,7 @@ public sealed class UnixProcessRunner(ProcessRunnerOptions? options = null, ILog
     public Process Start(string fileName, string? arguments = null, string? workingDir = null)
     {
         var isUnix = OperatingSystem.IsLinux() || OperatingSystem.IsMacOS() || OperatingSystem.IsMacCatalyst();
-        if (!isUnix) throw new PlatformNotSupportedException("UnixProcessRunner só suporta Linux/macOS.");
+        if (!isUnix) throw new PlatformNotSupportedException("UnixProcessRunnerKiller só suporta Linux/macOS.");
 
         var workDir = string.IsNullOrWhiteSpace(workingDir) ? Environment.CurrentDirectory : workingDir!;
         var hasSetSid = FileExists("/usr/bin/setsid") || FileExists("/bin/setsid");

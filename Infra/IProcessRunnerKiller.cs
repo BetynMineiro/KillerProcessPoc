@@ -5,7 +5,7 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
-public interface IProcessRunner : IDisposable
+public interface IProcessRunnerKiller : IDisposable
 {
     Process Start(string fileName, string? arguments = null, string? workingDir = null);
     Task<int> RunWithTimeoutAsync(string fileName, string? arguments, TimeSpan timeout, CancellationToken ct = default);

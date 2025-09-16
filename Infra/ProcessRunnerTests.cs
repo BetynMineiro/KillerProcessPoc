@@ -6,11 +6,11 @@ namespace Infra;
 
 public class ProcessRunnerTests : IDisposable
 {
-    private readonly IProcessRunner _runner;
+    private readonly IProcessRunnerKiller _runnerKiller;
 
     public ProcessRunnerTests()
     {
-        var loggerMock = new Mock<ILogger<IProcessRunner>>();
+        var loggerMock = new Mock<ILogger<IProcessRunnerKiller>>();
         var logger = loggerMock.Object;
 
         var options = new ProcessRunnerOptions
@@ -18,19 +18,19 @@ public class ProcessRunnerTests : IDisposable
             GracefulWaitBeforeKill = TimeSpan.FromMilliseconds(200)
         };
 
-        _runner = new UnixProcessRunner(options, logger);
+        _runnerKiller = new UnixProcessRunnerKiller(options, logger);
     }
 
     public void Dispose()
     {
-        _runner.Dispose();
+        _runnerKiller.Dispose();
     }
 
     [Fact(DisplayName = "Start: deve lançar o processo")]
     public void Start_ShouldLaunchProcess()
     {
         // Arrange + Act
-        var p = _runner.Start("sleep", "1");
+        var p = _runnerKiller.Start("sleep", "1");
 
         // Assert
         Assert.NotNull(p);
@@ -43,7 +43,7 @@ public class ProcessRunnerTests : IDisposable
     {
         // Act
         // macOS/Linux costumam aceitar frações no sleep; se preferir, troque para "1" e timeout maior
-        int exit = await _runner.RunWithTimeoutAsync("sleep", "0.2", TimeSpan.FromSeconds(2));
+        int exit = await _runnerKiller.RunWithTimeoutAsync("sleep", "0.2", TimeSpan.FromSeconds(2));
 
         // Assert
         Assert.Equal(0, exit);
@@ -53,7 +53,7 @@ public class ProcessRunnerTests : IDisposable
     public async Task RunWithTimeoutAsync_ShouldKillProcessTree_OnTimeout()
     {
         // Act
-        int exit = await _runner.RunWithTimeoutAsync("sleep", "5", TimeSpan.FromMilliseconds(300));
+        int exit = await _runnerKiller.RunWithTimeoutAsync("sleep", "5", TimeSpan.FromMilliseconds(300));
 
         // Assert: em geral não é 0 (terminado por sinal)
         Assert.NotEqual(0, exit);
@@ -63,11 +63,11 @@ public class ProcessRunnerTests : IDisposable
     public async Task KillTreeAsync_ShouldTerminateRunningProcess()
     {
         // Arrange
-        var p = _runner.Start("sleep", "10");
+        var p = _runnerKiller.Start("sleep", "10");
         Assert.False(p.HasExited);
 
         // Act
-        await _runner.KillTreeAsync(force: true);
+        await _runnerKiller.KillTreeAsync(force: true);
 
         // Aguarda o processo morrer, com timeout de 2 segundos para evitar travamento
         var completed = await Task.WhenAny(p.WaitForExitAsync(), Task.Delay(2000));
@@ -82,7 +82,7 @@ public class ProcessRunnerTests : IDisposable
     public void Dispose_ShouldBeIdempotent()
     {
         // Act + Assert
-        _runner.Dispose();
-        _runner.Dispose(); // não deve lançar exceção
+        _runnerKiller.Dispose();
+        _runnerKiller.Dispose(); // não deve lançar exceção
     }
 }

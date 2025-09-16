@@ -8,7 +8,7 @@ using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 
-public sealed class UnixProcessRunnerCgroup : IProcessRunner, IDisposable
+public sealed class UnixProcessRunnerKillerCgroup : IProcessRunnerKiller, IDisposable
 {
     private readonly TimeSpan _gracefulWaitBeforeKill;
     private readonly ILogger? _logger;
@@ -16,10 +16,10 @@ public sealed class UnixProcessRunnerCgroup : IProcessRunner, IDisposable
     private Process? _proc;            // processo do systemd-run (foreground)
     private string? _systemdUnit;      // nome da scope unit
 
-    public UnixProcessRunnerCgroup(ProcessRunnerOptions? options = null, ILogger? logger = null)
+    public UnixProcessRunnerKillerCgroup(ProcessRunnerOptions? options = null, ILogger? logger = null)
     {
         if (!OperatingSystem.IsLinux())
-            throw new PlatformNotSupportedException("UnixProcessRunnerCgroup (systemd) só suporta Linux.");
+            throw new PlatformNotSupportedException("UnixProcessRunnerKillerCgroup (systemd) só suporta Linux.");
 
         _gracefulWaitBeforeKill = (options?.GracefulWaitBeforeKill).GetValueOrDefault(TimeSpan.FromMilliseconds(500));
         _logger = logger;
